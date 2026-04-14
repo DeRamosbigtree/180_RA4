@@ -51,12 +51,12 @@ void read_config(const char *filename, Config *config) {
     fclose(fp);
 }
 
-int **allocate_matrix(int n) {
-    int **M = malloc(n * sizeof *M);
+int **allocate_matrix(int rows, int cols) {
+    int **M = malloc(rows * sizeof *M);
     if (!M) return NULL;
 
-    for (int i = 0; i < n; i++) {
-        M[i] = (int *)malloc((size_t)n * sizeof(int));
+    for (int i = 0; i < rows; i++) {
+        M[i] = malloc(cols * sizeof(int));
         if (!M[i]) {
             for (int k = 0; k < i; k++) free(M[k]);
             free(M);
@@ -75,8 +75,15 @@ void fill_matrix_random(int **M, int n) {
     }
 }
 
+void free_matrix(int **M, int rows) {
+    for (int i = 0; i < rows; i++) {
+        free(M[i]);
+    }
+    free(M);
+}
+
 // SLAVE
-void run_slave (int port, int n, const char *config_file, int slave_id) {
+void run_slave (int n, int port, const char *config_file, int slave_id) {
     int server_fd, client_sock;
     struct sockaddr_in addr;
 
@@ -133,7 +140,7 @@ void run_slave (int port, int n, const char *config_file, int slave_id) {
     recv(client_sock, &cols, sizeof(int), 0);
 
     // Allocate
-    int **sub = allocate_matrix(rows);
+    int **sub = allocate_matrix(rows, cols);
     if (!sub) {
         printf("Memory allocation failed\n");
         return;
@@ -175,7 +182,7 @@ void run_master(int n, int p, const char *config_file) {
     printf("MASTER: %d slaves\n", t);
 
     // (a) Create random matrix
-    int **M = allocate_matrix(n);
+    int **M = allocate_matrix(n, n);
     if (!M) {
         printf("Memory allocation failed\n");
         return;
