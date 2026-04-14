@@ -26,7 +26,16 @@ typedef struct {
     int slave_count;
 } Config;
 
-// config parser
+// ================= THREAD ARG =================
+typedef struct {
+    int start_row;
+    int rows_to_send;
+    int n;
+    int **M;
+    SlaveInfo slave;
+} ThreadArg;
+
+// ================= CONFIG =================
 void read_config(const char *filename, Config *config) {
     FILE *fp = fopen(filename, "r");
     if (!fp) {
@@ -38,11 +47,13 @@ void read_config(const char *filename, Config *config) {
 
     while(fscanf(fp, "%s", role) != EOF) {
         if (strcmp(role, "MASTER") == 0) {
-            fscanf(fp, "%s" "%d", config->master_ip, &config->master_port);
+            fscanf(fp, "%s %d", config->master_ip, &config->master_port);
         }
         else if (strcmp(role, "SLAVE") == 0) {
             int id;
-            fscanf(fp, "%d %s %d", &id, config->slaves[config->slave_count].ip, &config->slaves[config->slave_count].port);
+            fscanf(fp, "%d %s %d", &id,
+                   config->slaves[config->slave_count].ip,
+                   &config->slaves[config->slave_count].port);
 
             config->slaves[config->slave_count].id = id;
             config->slave_count++;
@@ -51,6 +62,7 @@ void read_config(const char *filename, Config *config) {
     fclose(fp);
 }
 
+// ================= MATRIX =================
 int **allocate_matrix(int rows, int cols) {
     int **M = malloc(rows * sizeof *M);
     if (!M) return NULL;
@@ -68,199 +80,178 @@ int **allocate_matrix(int rows, int cols) {
 
 void fill_matrix_random(int **M, int n) {
     srand((unsigned)time(NULL));
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) {
+    for (int i = 0; i < n; i++)
+        for (int j = 0; j < n; j++)
             M[i][j] = (rand() % 100) + 1;
-        }
-    }
 }
 
 void free_matrix(int **M, int rows) {
-    for (int i = 0; i < rows; i++) {
+    for (int i = 0; i < rows; i++)
         free(M[i]);
-    }
     free(M);
 }
 
-// SLAVE
+// ================= THREAD FUNCTION =================
+void *slave_thread(void *arg) {
+    ThreadArg *data = (ThreadArg *)arg;
+
+    int sock;
+    struct sockaddr_in addr;
+
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        printf("Socket creation failed\n");
+        pthread_exit(NULL);
+    }
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(data->slave.port);
+    inet_pton(AF_INET, data->slave.ip, &addr.sin_addr);
+
+    if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        printf("Connection to slave %d failed\n", data->slave.id);
+        close(sock);
+        pthread_exit(NULL);
+    }
+
+    printf("Connected to SLAVE %d\n", data->slave.id);
+
+    // Send metadata
+    send(sock, &data->rows_to_send, sizeof(int), 0);
+    send(sock, &data->n, sizeof(int), 0);
+
+    // Send matrix rows
+    for (int r = data->start_row; r < data->start_row + data->rows_to_send; r++) {
+        send(sock, data->M[r], data->n * sizeof(int), 0);
+    }
+
+    // Receive ACK
+    char ack[10];
+    recv(sock, ack, sizeof(ack), 0);
+    printf("Received ACK from SLAVE %d\n", data->slave.id);
+
+    close(sock);
+    pthread_exit(NULL);
+}
+
+// ================= SLAVE =================
 void run_slave (int n, int port, const char *config_file, int slave_id) {
     int server_fd, client_sock;
     struct sockaddr_in addr;
 
-    // Read from the configuration file what is the IP address of the master;
     Config config = {0};
     read_config(config_file, &config);
 
     printf("SLAVE %d listening on %d\n", slave_id, port);
 
-    // Create socket
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
-
     if(server_fd < 0){
-        printf("Error while creating socket\n");
+        printf("Error creating socket\n");
         return;
     }
-    printf("Socket created successfully\n");
-    
-    // Initialize the server address by the port and IP:
+
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
     addr.sin_addr.s_addr = INADDR_ANY;
 
-    // Bind 
     if(bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0){
-        printf("Couldn't bind to the port\n");
+        printf("Bind failed\n");
         return;
     }
-    // printf("Done with binding\n");
-    
-    // Turn on the socket to listen for incoming connections:
-    if(listen(server_fd, 3) < 0){
-        printf("Error while listening\n");
-        return;
-    }
-    printf("\nListening for incoming connections.....\n");
 
-    // Wait for master
+    if(listen(server_fd, 3) < 0){
+        printf("Listen failed\n");
+        return;
+    }
+
+    printf("Waiting for master...\n");
+
     client_sock = accept(server_fd, NULL, NULL);
     if (client_sock < 0) {
-        printf("Can't accept connection\n");
+        printf("Accept failed\n");
         return;
     }
 
     printf("MASTER connected to SLAVE %d\n", slave_id);
 
-    // Start timer
-    clock_t time_before = clock();
+    clock_t t1 = clock();
 
-    // Receive metadata
     int rows, cols;
     recv(client_sock, &rows, sizeof(int), 0);
     recv(client_sock, &cols, sizeof(int), 0);
 
-    // Allocate
     int **sub = allocate_matrix(rows, cols);
-    if (!sub) {
-        printf("Memory allocation failed\n");
-        return;
-    }
 
-    // Receive data
     for (int i = 0; i < rows; i++) {
         recv(client_sock, sub[i], cols * sizeof(int), 0);
     }
 
-    // Send ack
     send(client_sock, "ack", 4, 0);
 
-    // ---- timing end ----
-    clock_t time_after = clock();
+    clock_t t2 = clock();
+    printf("SLAVE %d TIME: %f\n", slave_id,
+           (double)(t2 - t1) / CLOCKS_PER_SEC);
 
-    double elapsed = (double)(time_after - time_before) / CLOCKS_PER_SEC;
-    printf("SLAVE %d TIME: %f seconds\n", slave_id, elapsed);
-
-    // Verification
-    printf("First: %d, Last: %d\n",
-       sub[0][0],
-       sub[rows-1][cols-1]);
-
-    // Cleanup
     free_matrix(sub, rows);
     close(client_sock);
     close(server_fd);
-
 }
 
-// MASTER
+// ================= MASTER =================
 void run_master(int n, int p, const char *config_file) {
-    // (b) Read config
     Config config = {0};
     read_config(config_file, &config);
 
     int t = config.slave_count;
     printf("MASTER: %d slaves\n", t);
 
-    // (a) Create random matrix
     int **M = allocate_matrix(n, n);
-    if (!M) {
-        printf("Memory allocation failed\n");
-        return;
-    }
     fill_matrix_random(M, n);
 
-    // (c) Divide matrix
     int base = n / t;
     int remainder = n % t;
     int start_row = 0;
 
-    int socks[MAX_SLAVES];
+    pthread_t threads[MAX_SLAVES];
+    ThreadArg args[MAX_SLAVES];
 
-    // (d) time_before
-    clock_t time_before = clock();
+    clock_t t1 = clock();
 
-    // (e) Connect + send to each slave
+    // CREATE THREADS
     for (int i = 0; i < t; i++) {
         int rows_to_send = base + (i < remainder ? 1 : 0);
 
-        // Create socket
-        socks[i] = socket(AF_INET, SOCK_STREAM, 0);
-        if (socks[i] < 0) {
-            printf("Socket creation failed\n");
-            return;
-        }
+        args[i].start_row = start_row;
+        args[i].rows_to_send = rows_to_send;
+        args[i].n = n;
+        args[i].M = M;
+        args[i].slave = config.slaves[i];
 
-        struct sockaddr_in addr;
-        memset(&addr, 0, sizeof(addr));
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(config.slaves[i].port);
-        inet_pton(AF_INET, config.slaves[i].ip, &addr.sin_addr);
-
-        // Connect to slave
-        if (connect(socks[i], (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-            printf("Connection to slave %d failed\n", config.slaves[i].id);
-            return;
-        }
-
-        printf("Connected to SLAVE %d\n", config.slaves[i].id);
-
-        // Send metadata
-        send(socks[i], &rows_to_send, sizeof(int), 0);
-        send(socks[i], &n, sizeof(int), 0);
-
-        // Send submatrix rows
-        for (int r = start_row; r < start_row + rows_to_send; r++) {
-            send(socks[i], M[r], n * sizeof(int), 0);
-        }
+        pthread_create(&threads[i], NULL, slave_thread, &args[i]);
 
         start_row += rows_to_send;
     }
 
-    // (f,g) Receive ACKs from all slaves
+    // JOIN THREADS
     for (int i = 0; i < t; i++) {
-        char ack[10];
-        recv(socks[i], ack, sizeof(ack), 0);
-
-        printf("Received ACK from SLAVE %d\n", config.slaves[i].id);
-
-        close(socks[i]);
+        pthread_join(threads[i], NULL);
     }
 
-    // (f) time_after
-    clock_t time_after = clock();
-
-    double elapsed = (double)(time_after - time_before) / CLOCKS_PER_SEC;
-    printf("MASTER TIME: %f seconds\n", elapsed);
+    clock_t t2 = clock();
+    printf("MASTER TIME: %f\n",
+           (double)(t2 - t1) / CLOCKS_PER_SEC);
 
     free_matrix(M, n);
 }
 
+// ================= MAIN =================
 int main(int argc, char *argv[]) {
-   // (1) Read n, s, p as user input
     if (argc < 5) {
         printf("Usage:\n");
-        printf("  Master: %s n p 0 config.txt\n", argv[0]);
-        printf("  Slave: %s n p 1 config.txt slave_id\n", argv[0]);
+        printf("Master: %s n p 0 config.txt\n", argv[0]);
+        printf("Slave:  %s n p 1 config.txt slave_id\n", argv[0]);
         return 1;
     }
 
@@ -269,21 +260,11 @@ int main(int argc, char *argv[]) {
     int s = atoi(argv[3]);
     const char *config_file = argv[4];
 
-    // (2) If s = 0, then
     if (s == 0) {
-        // call function to run master
         run_master(n, p, config_file);
-    } else if (s == 1) {
-        if (argc < 6) {
-            printf("Enter slave_id for slave mode\n");
-            return 1;
-        }
-        int slave_id = atoi(argv[5]);
-        // call function to run slave
-        run_slave(n, p, config_file, slave_id);
     } else {
-        printf("Enter correct value for s (0 for master and 1 for slave)");
-        return 1;
+        int slave_id = atoi(argv[5]);
+        run_slave(n, p, config_file, slave_id);
     }
 
     return 0;
