@@ -2,8 +2,8 @@
 
 N="$1"
 CONFIG="${2:-config.txt}"
-EXEC="${3:-./lab04}"
-SESSION="lrp04"
+EXEC="${3:-./lab04_ca}"
+SESSION="lrp04ca"
 
 if [ -z "$N" ]; then
     echo "Usage: $0 <n> [config_file] [executable]"
@@ -33,11 +33,11 @@ if [ -z "$SLAVES" ]; then
     exit 1
 fi
 
-# kill leftover lab04 processes only
-pkill -x lab04 2>/dev/null
+# kill leftover processes
+pkill -x lab04_ca 2>/dev/null
 sleep 1
 
-# kill old lrp04 session only if it exists
+# kill old tmux session only if it exists
 if tmux has-session -t "$SESSION" 2>/dev/null; then
     tmux kill-session -t "$SESSION"
 fi

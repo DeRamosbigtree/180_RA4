@@ -154,6 +154,13 @@ void run_slave (int n, int port, const char *config_file, int slave_id) {
         return;
     }
     printf("Socket created successfully\n");
+
+    int opt = 1;
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt");
+        close(server_fd);
+        return;
+    }
     
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
