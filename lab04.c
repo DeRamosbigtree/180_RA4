@@ -28,6 +28,14 @@ typedef struct {
     int slave_count;
 } Config;
 
+typedef struct {
+    int start_row;
+    int rows_to_send;
+    int n;
+    int **M;
+    SlaveInfo slave;
+} ThreadArg;
+
 // config parser
 void read_config(const char *filename, Config *config) {
     FILE *fp = fopen(filename, "r");
@@ -122,6 +130,51 @@ void free_matrix(int **M, int rows) {
     free(M);
 }
 
+// Threads
+void *slave_thread(void *arg) {
+    ThreadArg *data = (ThreadArg *)arg;
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in addr;
+
+    if (sock < 0) {
+        printf("Socket creation failed\n");
+        pthread_exit(NULL);
+    }
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(data->slave.port);
+    inet_pton(AF_INET, data->slave.ip, &addr.sin_addr);
+
+    if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        printf("Connection failed SLAVE %d\n", data->slave.id);
+        close(sock);
+        pthread_exit(NULL);
+    }
+
+    printf("Connected to SLAVE %d\n", data->slave.id);
+
+    // send metadata
+    send_all(sock, &data->rows_to_send, sizeof(int));
+    send_all(sock, &data->n, sizeof(int));
+
+    // send matrix rows
+    for (int r = data->start_row;
+         r < data->start_row + data->rows_to_send;
+         r++) {
+        send_all(sock, data->M[r], data->n * sizeof(int));
+    }
+
+    // receive ack
+    char ack[4];
+    recv_all(sock, ack, sizeof(ack));
+    printf("ACK from SLAVE %d\n", data->slave.id);
+
+    close(sock);
+    pthread_exit(NULL);
+}
+
 // SLAVE
 void run_slave (int n, int port, const char *config_file, int slave_id) {
     int server_fd, client_sock;
@@ -207,6 +260,8 @@ void run_slave (int n, int port, const char *config_file, int slave_id) {
     double elapsed = time_after - time_before;
     printf("SLAVE %d TIME: %f seconds\n", slave_id, elapsed);
 
+
+    // lets fix this to print the whole matrix
     printf("First: %d, Last: %d\n",
        sub[0][0],
        sub[rows-1][cols-1]);
@@ -235,63 +290,28 @@ void run_master(int n, int p, const char *config_file) {
     int remainder = n % t;
     int start_row = 0;
 
-    int socks[MAX_SLAVES];
+    pthread_t threads[MAX_SLAVES];
+    ThreadArg args[MAX_SLAVES];
 
     double time_before = get_time_seconds();
 
     for (int i = 0; i < t; i++) {
         int rows_to_send = base + (i < remainder ? 1 : 0);
 
-        socks[i] = socket(AF_INET, SOCK_STREAM, 0);
-        if (socks[i] < 0) {
-            printf("Socket creation failed\n");
-            return;
-        }
+        args[i].start_row = start_row;
+        args[i].rows_to_send = rows_to_send;
+        args[i].n = n;
+        args[i].M = M;
+        args[i].slave = config.slaves[i];
 
-        struct sockaddr_in addr;
-        memset(&addr, 0, sizeof(addr));
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(config.slaves[i].port);
-        inet_pton(AF_INET, config.slaves[i].ip, &addr.sin_addr);
-
-        if (connect(socks[i], (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-            printf("Connection to slave %d failed\n", config.slaves[i].id);
-            return;
-        }
-
-        printf("Connected to SLAVE %d\n", config.slaves[i].id);
-
-        if (send_all(socks[i], &rows_to_send, sizeof(int)) < 0 ||
-            send_all(socks[i], &n, sizeof(int)) < 0) {
-            printf("Error sending metadata to SLAVE %d\n", config.slaves[i].id);
-            close(socks[i]);
-            return;
-        }
-
-        for (int r = start_row; r < start_row + rows_to_send; r++) {
-            if (send_all(socks[i], M[r], (size_t)n * sizeof(int)) < 0) {
-                printf("Error sending row %d to SLAVE %d\n", r, config.slaves[i].id);
-                close(socks[i]);
-                return;
-            }
-        }
+        pthread_create(&threads[i], NULL, slave_thread, &args[i]);
 
         start_row += rows_to_send;
     }
 
-    for (int i = 0; i < t; i++) {
-        char ack[4];
-        if (recv_all(socks[i], ack, sizeof(ack)) < 0) {
-            printf("Error receiving ACK from SLAVE %d\n", config.slaves[i].id);
-            close(socks[i]);
-            return;
-        }
-
-        printf("Received ACK from SLAVE %d\n", config.slaves[i].id);
-
-        close(socks[i]);
-    }
-
+    for (int i = 0; i < t; i++)
+        pthread_join(threads[i], NULL);
+       
     double time_after = get_time_seconds();
 
     double elapsed = time_after - time_before;

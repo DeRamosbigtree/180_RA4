@@ -38,7 +38,7 @@ typedef struct {
     int rows_to_send;
     int success;
     int core_id;
-} MasterThreadArgs;
+} ThreadArgs;
 
 // config parser
 void read_config(const char *filename, Config *config) {
@@ -235,7 +235,7 @@ void run_slave (int n, int port, const char *config_file, int slave_id) {
 }
 
 void *master_send_to_slave(void *arg) {
-    MasterThreadArgs *a = (MasterThreadArgs *)arg;
+    ThreadArgs *a = (ThreadArgs *)arg;
     a->success = 0;
 
     cpu_set_t cpuset;
@@ -322,7 +322,7 @@ void run_master(int n, int p, const char *config_file) {
     int start_row = 0;
 
     pthread_t threads[MAX_SLAVES];
-    MasterThreadArgs args[MAX_SLAVES];
+    ThreadArgs args[MAX_SLAVES];
 
     double time_before = get_time_seconds();
 
