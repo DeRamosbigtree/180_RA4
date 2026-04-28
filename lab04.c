@@ -123,6 +123,15 @@ void fill_matrix_random(int **M, int n) {
     }
 }
 
+// This is to check if the sent matrix is correct but use random for actual data
+void fill_matrix_deterministic(int **X, int n) {
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < n; j++) {
+            X[i][j] = i * n + j + 1;
+        }
+    }
+}
+
 void free_matrix(int **M, int rows) {
     for (int i = 0; i < rows; i++) {
         free(M[i]);
@@ -268,8 +277,6 @@ void run_slave (int n, int port, const char *config_file, int slave_id) {
     double elapsed = time_after - time_before;
     printf("SLAVE %d TIME: %f seconds\n", slave_id, elapsed);
 
-
-    // lets fix this to print the whole matrix
     printf("First: %d, Last: %d\n",
        sub[0][0],
        sub[rows-1][cols-1]);
@@ -292,7 +299,7 @@ void run_master(int n, int p, const char *config_file) {
         printf("Memory allocation failed\n");
         return;
     }
-    fill_matrix_random(M, n);
+    fill_matrix_deterministic(M, n);
 
     int base = n / t;
     int remainder = n % t;

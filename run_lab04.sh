@@ -2,8 +2,8 @@
 
 N="$1"
 CONFIG="${2:-config.txt}"
-EXEC="${3:-./lab04}"
-SESSION="lrp04"
+EXEC="${3:-lab04}"
+USER_NAME="wederamos"
 
 if [ -z "$N" ]; then
     echo "Usage: $0 <n> [config_file] [executable]"
@@ -15,52 +15,46 @@ if [ ! -f "$CONFIG" ]; then
     exit 1
 fi
 
-if [ ! -x "$EXEC" ]; then
-    echo "Executable not found or not executable: $EXEC"
+if [ ! -f "$EXEC" ]; then
+    echo "Executable not found: $EXEC"
     exit 1
 fi
 
+MASTER_IP=$(awk '$1=="MASTER" {print $2}' "$CONFIG")
 MASTER_PORT=$(awk '$1=="MASTER" {print $3}' "$CONFIG")
-SLAVES=$(awk '$1=="SLAVE" {print $2, $4}' "$CONFIG")
 
-if [ -z "$MASTER_PORT" ]; then
-    echo "No MASTER entry found in $CONFIG"
+if [ -z "$MASTER_IP" ] || [ -z "$MASTER_PORT" ]; then
+    echo "No valid MASTER entry found in $CONFIG"
     exit 1
 fi
 
-if [ -z "$SLAVES" ]; then
-    echo "No SLAVE entries found in $CONFIG"
-    exit 1
-fi
+echo "Master: $MASTER_IP:$MASTER_PORT"
+echo "Launching slaves..."
 
-# kill leftover lab04 processes only
-pkill -x lab04 2>/dev/null
-sleep 1
-
-# kill old lrp04 session only if it exists
-if tmux has-session -t "$SESSION" 2>/dev/null; then
-    tmux kill-session -t "$SESSION"
-fi
-
-FIRST=1
-
-while read -r SLAVE_ID SLAVE_PORT
+awk '$1=="SLAVE" {print $2, $3, $4}' "$CONFIG" | while read -r SLAVE_ID SLAVE_IP SLAVE_PORT
 do
-    CMD="$EXEC $N $SLAVE_PORT 1 $CONFIG $SLAVE_ID"
+    [ -z "$SLAVE_ID" ] && continue
+    echo "Starting slave $SLAVE_ID on $SLAVE_IP:$SLAVE_PORT"
 
-    if [ $FIRST -eq 1 ]; then
-        tmux new-session -d -s "$SESSION" "$CMD; bash"
-        FIRST=0
-    else
-        tmux split-window -t "$SESSION" "$CMD; bash"
-        tmux select-layout -t "$SESSION" tiled >/dev/null
-    fi
-done <<< "$SLAVES"
+    ssh -n -o StrictHostKeyChecking=accept-new "$USER_NAME@$SLAVE_IP" \
+        bash -s -- "$N" "$SLAVE_PORT" "$SLAVE_ID" <<'EOF'
+cd ~ || exit 1
+pkill -u wederamos -x lab04 2>/dev/null || true
+chmod +x ./lab04 || exit 1
+nohup ./lab04 "$1" "$2" 1 config.txt "$3" > "slave_$3.log" 2>&1 < /dev/null &
+EOF
+done
 
-sleep 2
+sleep 3
 
-MASTER_CMD="$EXEC $N $MASTER_PORT 0 $CONFIG"
-tmux split-window -t "$SESSION" "$MASTER_CMD; bash"
-tmux select-layout -t "$SESSION" tiled >/dev/null
+echo "Starting master on $MASTER_IP:$MASTER_PORT"
 
-tmux attach -t "$SESSION"
+ssh -n -o StrictHostKeyChecking=accept-new "$USER_NAME@$MASTER_IP" \
+    bash -s -- "$N" "$MASTER_PORT" <<'EOF'
+cd ~ || exit 1
+pkill -u wederamos -x lab04 2>/dev/null || true
+chmod +x ./lab04 || exit 1
+nohup ./lab04 "$1" "$2" 0 config.txt > master.log 2>&1 < /dev/null &
+EOF
+
+echo "Done."
